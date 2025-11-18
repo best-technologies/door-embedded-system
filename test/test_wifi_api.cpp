@@ -2,13 +2,10 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-const char* ssid = "Best Technologies";
-const char* password = "BestTech25";
-const char* pi_server = "https://embedded-door-lock.onrender.com";
-
-void testAuthentication();
-void getUsers();
-void verifyByid();
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* server = "https://embedded-door-lock.onrender.com";
+const char* deviceId = "DOOR-001";
 
 void setup() {
   Serial.begin(115200);
@@ -26,10 +23,9 @@ void setup() {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
   
-  Serial.println("WiFi/API Test Commands:");
-  Serial.println("'auth' - Test authentication API");
-  Serial.println("'users' - Get users list");
-  Serial.println("'log' - Test attendance logging");
+  Serial.println("API Test Commands:");
+  Serial.println("'finger' - Test fingerprint verification");
+  Serial.println("'rfid' - Test RFID verification");
 }
 
 void loop() {
@@ -37,39 +33,41 @@ void loop() {
     String command = Serial.readString();
     command.trim();
     
-    if (command == "auth") {
-      testAuthentication();
+    if (command == "finger") {
+      testFingerprintAuth();
     }
-    else if (command == "users") {
-      getUsers();
+    else if (command == "rfid") {
+      testRFIDAuth();
     }
-    // else if (command == "log") {
-    //   logAttendance();
-    // }
   }
   delay(100);
 }
 
-void testAuthentication() {
+void testFingerprintAuth() {
   HTTPClient http;
-  http.begin(String(pi_server) + "/api/authenticate");
+  http.begin(String(server) + "/api/v1/access/verify-fingerprint");
   http.addHeader("Content-Type", "application/json");
   
   DynamicJsonDocument doc(512);
-  doc["method"] = "fingerprint";
-  doc["fingerprint_id"] = 1;
-  doc["timestamp"] = millis();
+  doc["fingerprintId"] = 1;
+  doc["deviceId"] = deviceId;
   
   String payload;
   serializeJson(doc, payload);
   
-  Serial.println("Testing authentication API...");
+  Serial.println("Testing fingerprint verification...");
+  Serial.println("Request: " + payload);
+  
   int httpCode = http.POST(payload);
   
   if (httpCode > 0) {
     String response = http.getString();
     Serial.printf("HTTP Code: %d\n", httpCode);
     Serial.println("Response: " + response);
+    
+    if (httpCode == 200) {
+      parseUserResponse(response);
+    }
   } else {
     Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
   }
@@ -77,17 +75,31 @@ void testAuthentication() {
   http.end();
 }
 
-void getUsers() {
+void testRFIDAuth() {
   HTTPClient http;
-  http.begin(String(pi_server) + "/api/v1/users");
+  http.begin(String(server) + "/api/v1/access/verify-rfid");
+  http.addHeader("Content-Type", "application/json");
   
-  Serial.println("Getting users list...");
-  int httpCode = http.GET();
+  DynamicJsonDocument doc(512);
+  doc["rfidTag"] = "0xA1B2C3D4";
+  doc["deviceId"] = deviceId;
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  Serial.println("Testing RFID verification...");
+  Serial.println("Request: " + payload);
+  
+  int httpCode = http.POST(payload);
   
   if (httpCode > 0) {
     String response = http.getString();
     Serial.printf("HTTP Code: %d\n", httpCode);
     Serial.println("Response: " + response);
+    
+    if (httpCode == 200) {
+      parseUserResponse(response);
+    }
   } else {
     Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
   }
@@ -95,29 +107,37 @@ void getUsers() {
   http.end();
 }
 
-void verifyByid() {
-  HTTPClient http;
-  http.begin(String(pi_server) + "/api/v1/access/verify-fingerprint");
-  http.addHeader("Content-Type", "application/json");
+void parseUserResponse(String response) {
+  DynamicJsonDocument doc(2048);
+  deserializeJson(doc, response);
   
-  DynamicJsonDocument doc(512);
-  doc["user_name"] = "User_id";
-  doc["action"] = "entry";
-  doc["method"] = "test";
+  bool success = doc["success"];
+  String message = doc["message"];
   
-  String payload;
-  serializeJson(doc, payload);
+  Serial.println("\n=== PARSED RESPONSE ===");
+  Serial.println("Success: " + String(success ? "true" : "false"));
+  Serial.println("Message: " + message);
   
-  Serial.println("Testing attendance logging...");
-  int httpCode = http.POST(payload);
-  
-  if (httpCode > 0) {
-    String response = http.getString();
-    Serial.printf("HTTP Code: %d\n", httpCode);
-    Serial.println("Response: " + response);
+  if (success && doc["data"]["authorized"]) {
+    JsonObject user = doc["data"]["user"];
+    
+    String firstName = user["firstName"];
+    String lastName = user["lastName"];
+    String email = user["email"];
+    String department = user["department"];
+    String status = user["status"];
+    
+    Serial.println("\n=== USER INFO ===");
+    Serial.println("Name: " + firstName + " " + lastName);
+    Serial.println("Email: " + email);
+    Serial.println("Department: " + department);
+    Serial.println("Status: " + status);
+    Serial.println("Access: GRANTED");
   } else {
-    Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.println("Access: DENIED");
+    if (doc["data"]["reason"]) {
+      Serial.println("Reason: " + String(doc["data"]["reason"].as<const char*>()));
+    }
   }
-  
-  http.end();
+  Serial.println("=====================\n");
 }

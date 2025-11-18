@@ -39,12 +39,12 @@ void loop() {
       Serial.print("Input: ");
       Serial.println(inputText);
     }
-    else if (key == 'A' || key == 'B') {
+    else if (key == 'A' || key == 'B' || key == 'C') {
       Serial.print("ENTER - Final input: ");
       Serial.println(inputText);
       inputText = "";
     }
-    else if (key == 'C' || key == '#') {
+    else if (key == 'D' || key == '#') {
       inputText = "";
       Serial.println("CLEAR - Input cleared");
     }
