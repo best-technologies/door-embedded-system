@@ -2,7 +2,7 @@
 #include <MFRC522.h>
 
 #define RFID_SS 15
-#define RFID_RST 32
+#define RFID_RST 34
 #define MOSI_PIN 23
 #define MISO_PIN 19
 #define SCK_PIN 18

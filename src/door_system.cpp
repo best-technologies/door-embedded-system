@@ -14,8 +14,8 @@
 #define TFT_RST 4
 #define TOUCH_CS 21
 #define TOUCH_IRQ 22
-#define RFID_SS 25
-#define RFID_RST 26
+#define RFID_SS 15
+#define RFID_RST 35
 #define BUZZER_PIN 26
 
 // Device objects
@@ -36,13 +36,16 @@ uint8_t controllerMAC[] = {0x24, 0x6F, 0x28, 0x12, 0x34, 0x56};
 
 // System state
 enum AuthMode { FINGERPRINT, RFID, PASSWORD };
-enum ScreenMode { HOME, FINGERPRINT_SCREEN, RFID_SCREEN, PASSWORD_SCREEN };
-ScreenMode currentScreen = HOME;
+enum ScreenMode { BOOT, HOME, FINGERPRINT_SCREEN, RFID_SCREEN, PASSWORD_SCREEN };
+ScreenMode currentScreen = BOOT;
 AuthMode currentMode = FINGERPRINT;
 String inputPassword = "";
 bool systemLocked = true;
 bool scanningActive = false;
 int failedAttempts = 0;
+bool wifiConnected = false;
+unsigned long lastWifiCheck = 0;
+const unsigned long wifiCheckInterval = 5000; // Check every 5 seconds
 
 // Keypad setup
 const byte ROWS = 4;
@@ -66,6 +69,10 @@ typedef struct {
 
 void initESPNow();
 void connectWiFi();
+bool checkWiFiConnection();
+void attemptWiFiReconnect();
+void showBootScreen();
+void updateBootScreen(int dots);
 
 void drawMainInterface();
 void drawButton(int x, int y, int w, int h, uint16_t color, const char* text);
@@ -118,11 +125,16 @@ void setup() {
   // Initialize buzzer
   pinMode(BUZZER_PIN, OUTPUT);
   
+  // Show boot screen
+  showBootScreen();
+  
   // Connect to WiFi
   connectWiFi();
   
-  // Initialize ESP-NOW
-  initESPNow();
+  // Initialize ESP-NOW if WiFi connected
+  if (wifiConnected) {
+    initESPNow();
+  }
   
   // Draw main interface
   drawMainInterface();
@@ -130,7 +142,32 @@ void setup() {
   Serial.println("Door system initialized");
 }
 
+void showBootScreen() {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(200, 140);
+  tft.println("Booting");
+}
+
+void updateBootScreen(int dots) {
+  // Clear dots area
+  tft.fillRect(320, 140, 100, 30, TFT_BLACK);
+  
+  // Show dots
+  tft.setCursor(320, 140);
+  for (int i = 0; i <= dots; i++) {
+    tft.print(".");
+  }
+}
+
 void loop() {
+  // Check WiFi periodically
+  if (millis() - lastWifiCheck > wifiCheckInterval) {
+    checkWiFiConnection();
+    lastWifiCheck = millis();
+  }
+  
   handleKeypad();
   
   if (currentScreen == FINGERPRINT_SCREEN) {
@@ -144,17 +181,17 @@ void loop() {
 
 void connectWiFi() {
   WiFi.begin(ssid, password);
-  tft.setCursor(10, 10);
-  tft.setTextColor(TFT_WHITE);
-  tft.print("Connecting WiFi...");
   
-  while (WiFi.status() != WL_CONNECTED) {
+  int attempts = 0;
+  int maxAttempts = 20; // 10 seconds timeout
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
+    updateBootScreen(attempts % 4);
     delay(500);
-    tft.print(".");
+    attempts++;
   }
   
-  tft.println(" Connected!");
-  delay(1000);
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
 }
 
 void initESPNow() {
@@ -178,28 +215,43 @@ void drawMainInterface() {
   tft.fillScreen(TFT_BLACK);
   currentScreen = HOME;
   
+  // WiFi status at top
+  if (!wifiConnected) {
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(180, 5);
+    tft.println("WiFi Not Connected");
+  }
+  
   // Title
   tft.setTextSize(3);
   tft.setTextColor(TFT_WHITE);
   tft.setCursor(120, 20);
   tft.println("DOOR ACCESS");
   
+  // Button colors based on WiFi status
+  uint16_t buttonColor = wifiConnected ? TFT_BLUE : TFT_DARKGREY;
+  uint16_t textColor = wifiConnected ? TFT_WHITE : TFT_LIGHTGREY;
+  
   // Long buttons with keypad instructions
-  tft.fillRect(50, 80, 380, 50, TFT_BLUE);
+  tft.fillRect(50, 80, 380, 50, buttonColor);
   tft.drawRect(50, 80, 380, 50, TFT_WHITE);
   tft.setTextSize(2);
-  tft.setTextColor(TFT_WHITE);
+  tft.setTextColor(textColor);
   tft.setCursor(60, 100);
   tft.println("Fingerprint => Press A");
   
-  tft.fillRect(50, 150, 380, 50, TFT_GREEN);
+  buttonColor = wifiConnected ? TFT_GREEN : TFT_DARKGREY;
+  tft.fillRect(50, 150, 380, 50, buttonColor);
   tft.drawRect(50, 150, 380, 50, TFT_WHITE);
   tft.setCursor(60, 170);
   tft.println("RFID => Press B");
   
-  tft.fillRect(50, 220, 380, 50, TFT_YELLOW);
+  buttonColor = wifiConnected ? TFT_YELLOW : TFT_DARKGREY;
+  textColor = wifiConnected ? TFT_BLACK : TFT_LIGHTGREY;
+  tft.fillRect(50, 220, 380, 50, buttonColor);
   tft.drawRect(50, 220, 380, 50, TFT_WHITE);
-  tft.setTextColor(TFT_BLACK);
+  tft.setTextColor(textColor);
   tft.setCursor(60, 240);
   tft.println("Password => Press C");
 }
@@ -217,60 +269,64 @@ void drawButton(int x, int y, int w, int h, uint16_t color, const char* text) {
 }
 
 void handleFingerprint() {
-  // Check if finger is present first
-  uint8_t p = finger.getImage();
+  // Keep waiting until finger is detected
+  while (true) {
+    // Check for keypad input to allow exit
+    char key = keypad.getKey();
+    if (key == '*') {
+      drawMainInterface();
+      return;
+    }
+    
+    uint8_t p = finger.getImage();
+    
+    if (p == FINGERPRINT_OK) {
+      // Finger detected, break out of waiting loop
+      break;
+    }
+    
+    delay(100); // Small delay to prevent excessive polling
+  }
   
-  if (p == FINGERPRINT_NOFINGER) {
-    if (scanningActive) {
-      scanningActive = false;
-      showFingerprintStatus("Waiting for finger...");
+  // Finger detected, process it
+  showFingerprintStatus("Finger detected - scanning...");
+  drawFingerprintIcon(240, 120, TFT_YELLOW);
+  
+  uint8_t result = getFingerprintID();
+  
+  if (result == FINGERPRINT_OK) {
+    showFingerprintStatus("Match found!");
+    failedAttempts = 0;
+    authenticateUser(finger.fingerID, "fingerprint");
+  } else if (result == FINGERPRINT_NOTFOUND) {
+    failedAttempts++;
+    showFingerprintStatus("No match - Attempt " + String(failedAttempts) + "/5");
+    drawFingerprintIcon(240, 120, TFT_RED);
+    playBuzzer(2, 200);
+    delay(2000);
+    
+    if (failedAttempts >= 5) {
+      failedAttempts = 0;
+      drawMainInterface();
+    } else {
+      showFingerprintStatus("Place finger on sensor...");
       drawFingerprintIcon(240, 120, TFT_WHITE);
     }
-  } else{ 
-    // Finger detected, start scanning process
-      scanningActive = true;
-      showFingerprintStatus("Finger detected - scanning...");
-      drawFingerprintIcon(240, 120, TFT_YELLOW);
-      
-      // Now do the full fingerprint scan
-      uint8_t result = getFingerprintID();
-      
-      if (result == FINGERPRINT_OK) {
-        showFingerprintStatus("Match found!");
-        failedAttempts = 0; // Reset counter on success
-        authenticateUser(finger.fingerID, "fingerprint");
-      } else if (result == FINGERPRINT_NOTFOUND) {
-        failedAttempts++;
-        showFingerprintStatus("No match - Attempt " + String(failedAttempts) + "/5");
-        drawFingerprintIcon(240, 120, TFT_RED);
-        playBuzzer(2, 200);
-        delay(2000);
-        scanningActive = false;
-        
-        if (failedAttempts >= 5) {
-          failedAttempts = 0;
-          drawMainInterface();
-        } else {
-          showFingerprintStatus("Waiting for finger...");
-          drawFingerprintIcon(240, 120, TFT_WHITE);
-        }
-      } else {
-        failedAttempts++;
-        showFingerprintStatus("Scan error - Attempt " + String(failedAttempts) + "/5");
-        drawFingerprintIcon(240, 120, TFT_RED);
-        playBuzzer(1, 300);
-        delay(1500);
-        scanningActive = false;
-        
-        if (failedAttempts >= 5) {
-          failedAttempts = 0;
-          drawMainInterface();
-        } else {
-          showFingerprintStatus("Waiting for finger...");
-          drawFingerprintIcon(240, 120, TFT_WHITE);
-        }
-      }
+  } else {
+    failedAttempts++;
+    showFingerprintStatus("Scan error - Attempt " + String(failedAttempts) + "/5");
+    drawFingerprintIcon(240, 120, TFT_RED);
+    playBuzzer(1, 300);
+    delay(1500);
+    
+    if (failedAttempts >= 5) {
+      failedAttempts = 0;
+      drawMainInterface();
+    } else {
+      showFingerprintStatus("Place finger on sensor...");
+      drawFingerprintIcon(240, 120, TFT_WHITE);
     }
+  }
 }
 
 void handleRFID() {
@@ -288,6 +344,16 @@ void handleRFID() {
 
 void authenticateUser(int fingerID, const char* method) {
   drawFingerprintIcon(240, 120, TFT_YELLOW); // Show scanning
+  
+  // Check WiFi before API call
+  if (!checkWiFiConnection()) {
+    drawFingerprintIcon(240, 120, TFT_RED);
+    showFingerprintStatus("WiFi connection failed");
+    playBuzzer(2, 200);
+    delay(2000);
+    drawMainInterface();
+    return;
+  }
   
   HTTPClient http;
   http.begin(String(server) + "/api/v1/access/verify-fingerprint");
@@ -356,6 +422,15 @@ void authenticateUser(int fingerID, const char* method) {
 
 void authenticateCard(String cardID) {
   drawRFIDIcon(240, 120, TFT_YELLOW); // Show scanning
+  
+  // Check WiFi before API call
+  if (!checkWiFiConnection()) {
+    drawRFIDIcon(240, 120, TFT_RED);
+    playBuzzer(2, 200);
+    delay(2000);
+    drawRFIDIcon(240, 120, TFT_WHITE);
+    return;
+  }
   
   HTTPClient http;
   http.begin(String(server) + "/api/v1/access/verify-rfid");
@@ -447,8 +522,8 @@ void emergencyUnlock() {
 
 void showFingerprintScreen() {
   currentScreen = FINGERPRINT_SCREEN;
-  scanningActive = false;
-  failedAttempts = 0; // Reset counter when entering screen
+  scanningActive = true;
+  failedAttempts = 0;
   tft.fillScreen(TFT_BLACK);
   
   tft.setTextSize(2);
@@ -458,7 +533,7 @@ void showFingerprintScreen() {
   
   drawFingerprintIcon(240, 120, TFT_WHITE);
   
-  showFingerprintStatus("Waiting for finger...");
+  showFingerprintStatus("Place finger on sensor...");
   
   tft.setCursor(180, 250);
   tft.setTextColor(TFT_YELLOW);
@@ -570,6 +645,15 @@ void handleKeypad() {
   
   if (key) {
     if (currentScreen == HOME) {
+      if (!wifiConnected) {
+        // Check WiFi status and update if reconnected
+        if (WiFi.status() == WL_CONNECTED) {
+          wifiConnected = true;
+          drawMainInterface();
+        }
+        return; // Block keypad input when WiFi not connected
+      }
+      
       if (key == 'A') {
         showFingerprintScreen();
       } else if (key == 'B') {
@@ -602,6 +686,12 @@ void handleKeypad() {
 }
 
 void authenticatePassword(String password) {
+  // Check WiFi before API call
+  if (!checkWiFiConnection()) {
+    showPasswordError();
+    return;
+  }
+  
   HTTPClient http;
   http.begin(String(server) + "/api/v1/access/verify-keypad");
   http.addHeader("Content-Type", "application/json");
@@ -704,6 +794,43 @@ uint8_t getFingerprintID() {
   } else {
     showFingerprintStatus("Search failed");
     return p;
+  }
+}
+
+bool checkWiFiConnection() {
+  bool wasConnected = wifiConnected;
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
+  
+  if (!wifiConnected && wasConnected) {
+    // WiFi just disconnected
+    Serial.println("WiFi disconnected, attempting reconnection...");
+    attemptWiFiReconnect();
+  } else if (wifiConnected && !wasConnected) {
+    // WiFi just reconnected
+    Serial.println("WiFi reconnected!");
+    if (currentScreen == HOME) {
+      drawMainInterface(); // Refresh home screen
+    }
+  }
+  
+  return wifiConnected;
+}
+
+void attemptWiFiReconnect() {
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+    delay(500);
+    attempts++;
+  }
+  
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
+  
+  if (currentScreen == HOME) {
+    drawMainInterface(); // Update home screen status
   }
 }
 

@@ -12,6 +12,10 @@ typedef struct {
   char reason[32];
 } UnlockMessage;
 
+// Function declarations
+void onDataReceive(const uint8_t *mac, const uint8_t *incomingData, int len);
+void unlockDoor(int duration, const char* reason);
+
 void setup() {
   Serial.begin(115200);
   
