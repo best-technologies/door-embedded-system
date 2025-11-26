@@ -16,7 +16,7 @@
 #define TOUCH_IRQ 22
 #define RFID_SS 15
 #define RFID_RST 35
-#define BUZZER_PIN 26
+#define BUZZER_PIN 35
 
 // Device objects
 TFT_eSPI tft = TFT_eSPI();
@@ -30,16 +30,18 @@ const char* ssid = "SMART_SOCKET";
 const char* password = "123456789";
 const char* server = "https://embedded-door-lock.onrender.com";
 const char* deviceId = "DOOR-001";
+const char* adminPassword = "45236900";
 
 // Controller ESP32 MAC address
-uint8_t controllerMAC[] = {0x24, 0x6F, 0x28, 0x12, 0x34, 0x56};
+uint8_t controllerMAC[] = {0x34, 0x5F, 0x45, 0xA8, 0x08, 0x28};
 
 // System state
 enum AuthMode { FINGERPRINT, RFID, PASSWORD };
-enum ScreenMode { BOOT, HOME, FINGERPRINT_SCREEN, RFID_SCREEN, PASSWORD_SCREEN };
+enum ScreenMode { BOOT, HOME, FINGERPRINT_SCREEN, RFID_SCREEN, PASSWORD_SCREEN, ADMIN_SCREEN, USER_ID_INPUT, FINGERPRINT_ENROLL, RFID_USER_ID_INPUT, RFID_ENROLL };
 ScreenMode currentScreen = BOOT;
 AuthMode currentMode = FINGERPRINT;
 String inputPassword = "";
+String userIdInput = "";
 bool systemLocked = true;
 bool scanningActive = false;
 int failedAttempts = 0;
@@ -90,12 +92,24 @@ void emergencyUnlock();
 void showFingerprintScreen();
 void showRFIDScreen();
 void showPasswordScreen();
+void showAdminScreen();
+void handleAdminScreen();
 
 void drawFingerprintIcon(int x, int y, uint16_t color);
 void drawRFIDIcon(int x, int y, uint16_t color);
 void drawPasswordScreen();
 
 void authenticatePassword(String password);
+void checkAdminPassword(String password);
+void showUserIdInput();
+void handleUserIdInput();
+void enrollFingerprint(String userId);
+uint8_t getFingerprintEnroll(int id);
+void sendFingerprintToAPI(String userId, int fingerprintId);
+void showRfidUserIdInput();
+void handleRfidUserIdInput();
+void enrollRfid(String userId);
+void sendRfidToAPI(String userId, String rfidTag);
 
 void handleKeypad();
 void showPasswordError();
@@ -174,6 +188,12 @@ void loop() {
     handleFingerprint();
   } else if (currentScreen == RFID_SCREEN && scanningActive) {
     handleRFID();
+  } else if (currentScreen == ADMIN_SCREEN) {
+    handleAdminScreen();
+  } else if (currentScreen == USER_ID_INPUT) {
+    handleUserIdInput();
+  } else if (currentScreen == RFID_USER_ID_INPUT) {
+    handleRfidUserIdInput();
   }
   
   delay(100);
@@ -195,19 +215,24 @@ void connectWiFi() {
 }
 
 void initESPNow() {
+  WiFi.mode(WIFI_STA);
+  
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init failed");
     return;
   }
   
   // Add controller peer
-  esp_now_peer_info_t peerInfo;
+  esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, controllerMAC, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
     Serial.println("Failed to add peer");
+  } else {
+    Serial.println("ESP-NOW peer added successfully");
   }
 }
 
@@ -366,14 +391,41 @@ void authenticateUser(int fingerID, const char* method) {
   String payload;
   serializeJson(doc, payload);
   
+  Serial.println("=== FINGERPRINT AUTH DEBUG ===");
+  Serial.println("Detected Fingerprint ID: " + String(fingerID));
+  Serial.println("Request payload: " + payload);
+  Serial.println("Server URL: " + String(server) + "/api/v1/access/verify-fingerprint");
+  
   int httpCode = http.POST(payload);
+  
+  Serial.println("HTTP Code: " + String(httpCode));
   
   if (httpCode == 200) {
     String response = http.getString();
-    DynamicJsonDocument responseDoc(2048);
-    deserializeJson(responseDoc, response);
+    Serial.println("API Response: " + response);
     
-    if (responseDoc["success"] && responseDoc["data"]["authorized"]) {
+    DynamicJsonDocument responseDoc(2048);
+    DeserializationError error = deserializeJson(responseDoc, response);
+    
+    if (error) {
+      Serial.println("JSON parsing failed: " + String(error.c_str()));
+      return;
+    }
+    
+    bool success = responseDoc["success"];
+    bool authorized = responseDoc["data"]["authorized"];
+    Serial.println("Success: " + String(success));
+    Serial.println("Authorized: " + String(authorized));
+    Serial.println("Data exists: " + String(responseDoc["data"].isNull() ? "false" : "true"));
+    Serial.println("User exists: " + String(responseDoc["data"]["user"].isNull() ? "false" : "true"));
+    Serial.println("Message: " + String(responseDoc["message"].as<const char*>()));
+    
+    if (!success) {
+      showFingerprintStatus("ID " + String(fingerID) + " not registered");
+      delay(2000);
+    }
+    
+    if (success && authorized) {
       drawFingerprintIcon(240, 120, TFT_GREEN); // Success
       delay(1000);
       JsonObject user = responseDoc["data"]["user"];
@@ -386,6 +438,8 @@ void authenticateUser(int fingerID, const char* method) {
     } else {
       failedAttempts++;
       drawFingerprintIcon(240, 120, TFT_RED); // Failed
+      String reason = responseDoc["data"]["reason"] | "Access denied";
+      Serial.println("Denial reason: " + reason);
       showFingerprintStatus("Access denied - Attempt " + String(failedAttempts) + "/5");
       playBuzzer(2, 200);
       delay(2000);
@@ -437,7 +491,11 @@ void authenticateCard(String cardID) {
   http.addHeader("Content-Type", "application/json");
   
   DynamicJsonDocument doc(512);
-  doc["rfidTag"] = "0x" + cardID;
+  doc["rfidTag"] = cardID; // Remove 0x prefix
+  
+  Serial.println("=== RFID AUTH DEBUG ===");
+  Serial.println("Detected RFID: " + cardID);
+  Serial.println("Expected RFID: 73A079F6");
   doc["deviceId"] = deviceId;
   
   String payload;
@@ -547,7 +605,7 @@ void showFingerprintStatus(String message) {
   // Display status message
   tft.setTextSize(1);
   tft.setTextColor(TFT_CYAN);
-  tft.setCursor(60, 85);
+  tft.setCursor(200, 85);
   tft.println(message);
   
   Serial.println("Fingerprint: " + message);
@@ -668,7 +726,7 @@ void handleKeypad() {
         drawPasswordScreen();
       }
       else if (key == 'A' || key == 'B' || key == 'C') {
-        authenticatePassword(inputPassword);
+        checkAdminPassword(inputPassword);
       }
       else if (key == 'D' || key == '#') {
         inputPassword = "";
@@ -832,5 +890,463 @@ void attemptWiFiReconnect() {
   if (currentScreen == HOME) {
     drawMainInterface(); // Update home screen status
   }
+}
+
+void checkAdminPassword(String password) {
+  if (password == adminPassword) {
+    showAdminScreen();
+  } else {
+    authenticatePassword(password);
+  }
+}
+
+void showAdminScreen() {
+  currentScreen = ADMIN_SCREEN;
+  tft.fillScreen(TFT_BLACK);
+  
+  // Title
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_RED);
+  tft.setCursor(150, 20);
+  tft.println("ADMIN PANEL");
+  
+  // Add Fingerprint button
+  tft.fillRect(50, 80, 380, 50, TFT_BLUE);
+  tft.drawRect(50, 80, 380, 50, TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(60, 100);
+  tft.println("Add Fingerprint => Press A");
+  
+  // Add RFID button
+  tft.fillRect(50, 150, 380, 50, TFT_GREEN);
+  tft.drawRect(50, 150, 380, 50, TFT_WHITE);
+  tft.setCursor(60, 170);
+  tft.println("Add RFID => Press B");
+  
+  // Settings button
+  tft.fillRect(50, 220, 380, 50, TFT_YELLOW);
+  tft.drawRect(50, 220, 380, 50, TFT_WHITE);
+  tft.setTextColor(TFT_BLACK);
+  tft.setCursor(60, 240);
+  tft.println("Settings => Press C");
+  
+  // Back button
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_CYAN);
+  tft.setCursor(200, 290);
+  tft.println("Press * to go back");
+}
+
+void handleAdminScreen() {
+  char key = keypad.getKey();
+  
+  if (key) {
+    if (key == 'A') {
+      // Add Fingerprint functionality
+      showUserIdInput();
+    } else if (key == 'B') {
+      // Add RFID functionality
+      showRfidUserIdInput();
+    } else if (key == 'C') {
+      // Settings functionality
+      tft.fillScreen(TFT_BLACK);
+      tft.setTextSize(2);
+      tft.setTextColor(TFT_WHITE);
+      tft.setCursor(100, 100);
+      tft.println("Settings");
+      tft.setCursor(100, 130);
+      tft.println("Feature Coming Soon");
+      delay(2000);
+      showAdminScreen();
+    } else if (key == '*') {
+      drawMainInterface();
+    }
+  }
+}
+
+void showUserIdInput() {
+  currentScreen = USER_ID_INPUT;
+  userIdInput = "";
+  tft.fillScreen(TFT_BLACK);
+  
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(120, 30);
+  tft.println("ENTER USER ID");
+  
+  // Input display area
+  tft.drawRect(50, 80, 380, 50, TFT_WHITE);
+  tft.setCursor(60, 100);
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_CYAN);
+  tft.println("BTL-");
+  
+  // Instructions
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(50, 160);
+  tft.println("Enter 6 digits (e.g., 251101 for BTL-25-11-01)");
+  tft.setCursor(50, 180);
+  tft.println("0-9: Enter digits");
+  tft.setCursor(50, 200);
+  tft.println("A/B/C: Confirm and start enrollment");
+  tft.setCursor(50, 220);
+  tft.println("D/#: Clear all");
+  tft.setCursor(50, 240);
+  tft.println("*: Back to admin");
+}
+
+void handleUserIdInput() {
+  char key = keypad.getKey();
+  
+  if (key) {
+    if (key >= '0' && key <= '9' && userIdInput.length() < 6) {
+      userIdInput += key;
+      
+      // Update display
+      tft.fillRect(60, 100, 350, 30, TFT_BLACK);
+      tft.setCursor(60, 100);
+      tft.setTextSize(3);
+      tft.setTextColor(TFT_CYAN);
+      
+      String formatted = "BTL-";
+      for (int i = 0; i < userIdInput.length(); i++) {
+        if (i == 2 || i == 4) formatted += "-";
+        formatted += userIdInput[i];
+      }
+      tft.println(formatted);
+    }
+    else if (key == 'A' || key == 'B' || key == 'C') {
+      if (userIdInput.length() == 6) {
+        String userId = "BTL-" + userIdInput.substring(0,2) + "-" + userIdInput.substring(2,4) + "-" + userIdInput.substring(4,6);
+        enrollFingerprint(userId);
+      }
+    }
+    else if (key == 'D' || key == '#') {
+      userIdInput = "";
+      showUserIdInput();
+    }
+    else if (key == '*') {
+      showAdminScreen();
+    }
+  }
+}
+
+void enrollFingerprint(String userId) {
+  currentScreen = FINGERPRINT_ENROLL;
+  tft.fillScreen(TFT_BLACK);
+  
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(100, 30);
+  tft.println("FINGERPRINT ENROLL");
+  
+  tft.setTextSize(1);
+  tft.setCursor(50, 70);
+  tft.println("User ID: " + userId);
+  
+  // Find next available fingerprint ID
+  int nextId = 1;
+  while (nextId <= 127) {
+    if (finger.loadModel(nextId) != FINGERPRINT_OK) {
+      break; // Found empty slot
+    }
+    nextId++;
+  }
+  
+  if (nextId > 127) {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 100);
+    tft.println("Error: Fingerprint storage full");
+    delay(3000);
+    showAdminScreen();
+    return;
+  }
+  
+  tft.setTextColor(TFT_CYAN);
+  tft.setCursor(50, 100);
+  tft.println("Enrolling as ID: " + String(nextId));
+  
+  uint8_t result = getFingerprintEnroll(nextId);
+  
+  if (result == FINGERPRINT_OK) {
+    tft.setTextColor(TFT_GREEN);
+    tft.setCursor(50, 200);
+    tft.println("Enrollment successful!");
+    tft.setCursor(50, 220);
+    tft.println("Sending to server...");
+    
+    sendFingerprintToAPI(userId, nextId);
+  } else {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 200);
+    tft.println("Enrollment failed!");
+    delay(3000);
+    showAdminScreen();
+  }
+}
+
+uint8_t getFingerprintEnroll(int id) {
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(50, 120);
+  tft.println("Place finger on sensor...");
+  
+  int p = -1;
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    if (p == FINGERPRINT_NOFINGER) {
+      delay(100);
+      continue;
+    } else if (p != FINGERPRINT_OK) {
+      return p;
+    }
+  }
+  
+  tft.fillRect(50, 120, 400, 20, TFT_BLACK);
+  tft.setCursor(50, 120);
+  tft.println("Image taken, processing...");
+  
+  p = finger.image2Tz(1);
+  if (p != FINGERPRINT_OK) return p;
+  
+  tft.fillRect(50, 120, 400, 20, TFT_BLACK);
+  tft.setCursor(50, 120);
+  tft.println("Remove finger");
+  delay(2000);
+  
+  p = 0;
+  while (p != FINGERPRINT_NOFINGER) {
+    p = finger.getImage();
+  }
+  
+  tft.fillRect(50, 120, 400, 20, TFT_BLACK);
+  tft.setCursor(50, 120);
+  tft.println("Place same finger again...");
+  
+  p = -1;
+  while (p != FINGERPRINT_OK) {
+    p = finger.getImage();
+    if (p == FINGERPRINT_NOFINGER) {
+      delay(100);
+      continue;
+    } else if (p != FINGERPRINT_OK) {
+      return p;
+    }
+  }
+  
+  tft.fillRect(50, 120, 400, 20, TFT_BLACK);
+  tft.setCursor(50, 120);
+  tft.println("Image taken, creating model...");
+  
+  p = finger.image2Tz(2);
+  if (p != FINGERPRINT_OK) return p;
+  
+  p = finger.createModel();
+  if (p != FINGERPRINT_OK) return p;
+  
+  p = finger.storeModel(id);
+  return p;
+}
+
+void sendFingerprintToAPI(String userId, int fingerprintId) {
+  if (!checkWiFiConnection()) {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 240);
+    tft.println("WiFi connection failed");
+    delay(3000);
+    showAdminScreen();
+    return;
+  }
+  
+  HTTPClient http;
+  http.begin(String(server) + "/api/v1/users/" + userId + "/fingerprints");
+  http.addHeader("Content-Type", "application/json");
+  
+  DynamicJsonDocument doc(128);
+  doc["fingerprintId"] = fingerprintId;
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  int httpCode = http.POST(payload);
+  
+  if (httpCode == 200 || httpCode == 201) {
+    tft.setTextColor(TFT_GREEN);
+    tft.setCursor(50, 240);
+    tft.println("Successfully registered!");
+  } else {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 240);
+    tft.println("Server error: " + String(httpCode));
+  }
+  
+  http.end();
+  delay(3000);
+  showAdminScreen();
+}
+
+void showRfidUserIdInput() {
+  currentScreen = RFID_USER_ID_INPUT;
+  userIdInput = "";
+  tft.fillScreen(TFT_BLACK);
+  
+  // Title
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(100, 30);
+  tft.println("ENTER USER ID FOR RFID");
+  
+  // Input display area
+  tft.drawRect(50, 80, 380, 50, TFT_WHITE);
+  tft.setCursor(60, 100);
+  tft.setTextSize(3);
+  tft.setTextColor(TFT_CYAN);
+  tft.println("BTL-");
+  
+  // Instructions
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(50, 160);
+  tft.println("Enter 6 digits (e.g., 251101 for BTL-25-11-01)");
+  tft.setCursor(50, 180);
+  tft.println("0-9: Enter digits");
+  tft.setCursor(50, 200);
+  tft.println("A/B/C: Confirm and scan RFID card");
+  tft.setCursor(50, 220);
+  tft.println("D/#: Clear all");
+  tft.setCursor(50, 240);
+  tft.println("*: Back to admin");
+}
+
+void handleRfidUserIdInput() {
+  char key = keypad.getKey();
+  
+  if (key) {
+    if (key >= '0' && key <= '9' && userIdInput.length() < 6) {
+      userIdInput += key;
+      
+      // Update display
+      tft.fillRect(60, 100, 350, 30, TFT_BLACK);
+      tft.setCursor(60, 100);
+      tft.setTextSize(3);
+      tft.setTextColor(TFT_CYAN);
+      
+      String formatted = "BTL-";
+      for (int i = 0; i < userIdInput.length(); i++) {
+        if (i == 2 || i == 4) formatted += "-";
+        formatted += userIdInput[i];
+      }
+      tft.println(formatted);
+    }
+    else if (key == 'A' || key == 'B' || key == 'C') {
+      if (userIdInput.length() == 6) {
+        String userId = "BTL-" + userIdInput.substring(0,2) + "-" + userIdInput.substring(2,4) + "-" + userIdInput.substring(4,6);
+        enrollRfid(userId);
+      }
+    }
+    else if (key == 'D' || key == '#') {
+      userIdInput = "";
+      showRfidUserIdInput();
+    }
+    else if (key == '*') {
+      showAdminScreen();
+    }
+  }
+}
+
+void enrollRfid(String userId) {
+  currentScreen = RFID_ENROLL;
+  tft.fillScreen(TFT_BLACK);
+  
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(120, 30);
+  tft.println("RFID ENROLLMENT");
+  
+  tft.setTextSize(1);
+  tft.setCursor(50, 70);
+  tft.println("User ID: " + userId);
+  
+  tft.setTextColor(TFT_YELLOW);
+  tft.setCursor(50, 100);
+  tft.println("Present RFID card to reader...");
+  
+  drawRFIDIcon(240, 150, TFT_WHITE);
+  
+  tft.setTextColor(TFT_CYAN);
+  tft.setCursor(50, 250);
+  tft.println("Press * to cancel");
+  
+  // Wait for RFID card
+  while (true) {
+    char key = keypad.getKey();
+    if (key == '*') {
+      showAdminScreen();
+      return;
+    }
+    
+    if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+      String cardID = "";
+      for (byte i = 0; i < rfid.uid.size; i++) {
+        cardID += String(rfid.uid.uidByte[i] < 0x10 ? "0" : "");
+        cardID += String(rfid.uid.uidByte[i], HEX);
+      }
+      
+      tft.fillRect(50, 100, 400, 20, TFT_BLACK);
+      tft.setTextColor(TFT_GREEN);
+      tft.setCursor(50, 100);
+      tft.println("Card detected: " + cardID);
+      
+      drawRFIDIcon(240, 150, TFT_GREEN);
+      
+      tft.setCursor(50, 120);
+      tft.println("Sending to server...");
+      
+      sendRfidToAPI(userId, cardID);
+      rfid.PICC_HaltA();
+      return;
+    }
+    
+    delay(100);
+  }
+}
+
+void sendRfidToAPI(String userId, String rfidTag) {
+  if (!checkWiFiConnection()) {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 200);
+    tft.println("WiFi connection failed");
+    delay(3000);
+    showAdminScreen();
+    return;
+  }
+  
+  HTTPClient http;
+  http.begin(String(server) + "/api/v1/users/" + userId + "/rfid-tags");
+  http.addHeader("Content-Type", "application/json");
+  
+  DynamicJsonDocument doc(128);
+  doc["rfidTag"] = "0x" + rfidTag;
+  
+  String payload;
+  serializeJson(doc, payload);
+  
+  int httpCode = http.POST(payload);
+  
+  if (httpCode == 200 || httpCode == 201) {
+    tft.setTextColor(TFT_GREEN);
+    tft.setCursor(50, 200);
+    tft.println("RFID successfully registered!");
+  } else {
+    tft.setTextColor(TFT_RED);
+    tft.setCursor(50, 200);
+    tft.println("Server error: " + String(httpCode));
+  }
+  
+  http.end();
+  delay(3000);
+  showAdminScreen();
 }
 

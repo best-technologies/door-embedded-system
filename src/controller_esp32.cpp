@@ -3,7 +3,9 @@
 
 // Relay control pin
 #define RELAY_PIN 2
-#define LED_PIN 4
+#define LED_RED 4
+#define LED_GREEN 16
+#define BUZZER_PIN 15
 
 // Message structure (must match door ESP32)
 typedef struct {
@@ -21,9 +23,11 @@ void setup() {
   
   // Initialize pins
   pinMode(RELAY_PIN, OUTPUT);
-  pinMode(LED_PIN, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW); // Lock engaged
-  digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_RED, HIGH); // Indicate ready
   
   // Set device as WiFi Station
   WiFi.mode(WIFI_STA);
@@ -43,9 +47,8 @@ void setup() {
 }
 
 void loop() {
-  // Simple heartbeat LED
-  digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-  delay(1000);
+  // Just keep the system alive with minimal delay
+  delay(10);
 }
 
 void onDataReceive(const uint8_t *mac, const uint8_t *incomingData, int len) {
@@ -64,14 +67,16 @@ void unlockDoor(int duration, const char* reason) {
   
   // Activate relay (unlock)
   digitalWrite(RELAY_PIN, HIGH);
-  digitalWrite(LED_PIN, HIGH);
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_RED, LOW);
   
   // Keep unlocked for specified duration
   delay(duration);
   
   // Lock again
   digitalWrite(RELAY_PIN, LOW);
-  digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_RED, HIGH);
   
   Serial.println("Door locked");
 }
