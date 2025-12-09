@@ -11,7 +11,7 @@
 #define TFT_CS   5   // Chip select control pin
 #define TFT_DC   2   // Data Command control pin
 #define TFT_RST  4   // Reset pin
-#define TFT_BL   15  // LED back-light control pin (optional)
+// #define TFT_BL   15  // LED back-light control pin (optional)
 
 // Touch screen chip select pin
 #define TOUCH_CS 21
