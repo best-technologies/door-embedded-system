@@ -2,7 +2,7 @@
 #include <MFRC522.h>
 
 #define RFID_SS 15
-#define RFID_RST 32
+#define RFID_RST 34
 
 MFRC522 rfid(RFID_SS, RFID_RST);
 

@@ -1,0 +1,12 @@
+---
+# Clang-Tidy configuration for C++ linting
+Checks: >
+  clang-analyzer-*,
+  readability-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  -readability-magic-numbers,
+  -readability-implicit-bool-conversion
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*'

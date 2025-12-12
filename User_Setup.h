@@ -16,6 +16,7 @@
 // Touch screen chip select pin
 #define TOUCH_CS 21
 
+
 // SPI frequency settings
 #define SPI_FREQUENCY  27000000  // 27MHz for display
 #define SPI_READ_FREQUENCY  20000000

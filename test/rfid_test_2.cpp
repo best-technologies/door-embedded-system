@@ -5,7 +5,7 @@
 #include <MFRC522.h>
 
 #define SS_PIN 15
-#define RST_PIN 25
+#define RST_PIN 34
 #define MOSI_PIN 23
 #define MISO_PIN 19
 #define CLK_PIN 18
