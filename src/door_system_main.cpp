@@ -22,14 +22,14 @@ Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
 MFRC522 rfid(RFID_SS, RFID_RST);
 
 // Network config
-const char* ssid = "Best Technologies";
-const char* password = "BestTech25";
-const char* server = "https://embedded-door-lock.onrender.com";
+const char* ssid = "max-router2.4G";
+const char* password = "maximus123";
+const char* server = "http:// 192.168.1.179:1000";
 const char* deviceId = "DOOR-001";
 const char* adminPassword = "45236900";
 
 // Controller ESP32 IP address (will be discovered via mDNS or hardcoded)
-const char* controllerIP = "192.168.1.203";  // Update this to controller's actual IP
+const char* controllerIP = "192.168.1.171";  // Update this to controller's actual IP
 const uint16_t controllerPort = 80;
 
 // System state
@@ -62,6 +62,7 @@ Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 void connectWiFi();
 bool checkWiFiConnection();
 void attemptWiFiReconnect();
+
 void showBootScreen();
 void updateBootScreen(int dots);
 
@@ -974,14 +975,9 @@ void showAdminScreen() {
 
 void handleAdminScreen(char key) {
   if (key == 'A') {
-    // Add Fingerprint functionality
-    // *********************************************************
-
-    // *********************************************************
-    showUserIdInput();
+    showUserIdInput();  // Fingerprint functionality
   } else if (key == 'B') {
-    // Add RFID functionality
-    showRfidUserIdInput();
+    showRfidUserIdInput();  // Add RFID functionality
   } else if (key == 'C') {
     // Settings functionality
     tft.fillScreen(TFT_BLACK);

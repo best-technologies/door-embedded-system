@@ -119,8 +119,11 @@ void loop() {
     delay(100);
   }
 
-  // Note: RFID scanning is handled in showRFIDScreen() blocking loop
-  // Do NOT call readRFID() here as it conflicts with the blocking loop
+  // Handle RFID scanning if in RFID mode
+  if (currentScreen == RFID_SCREEN && scanningActive) {
+    readRFID();
+    delay(100);
+  }
 }
 
 void grantAccess(const char* userName, JsonObject user) {

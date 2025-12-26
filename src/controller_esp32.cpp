@@ -9,8 +9,8 @@
 #define BUTTON_PIN 14
 
 // WiFi credentials
-const char* ssid = "Best Technologies";
-const char* password = "BestTech25";
+const char* ssid = "max-router2.4G";
+const char* password = "maximus123";
 
 // Web server on port 80
 WebServer server(80);
@@ -70,6 +70,7 @@ void setup() {
   // Setup web server routes
   server.on("/api/v1/unlock", HTTP_POST, handleUnlock);
   server.on("/api/v1/buzzer", HTTP_POST, handleBuzzer);
+    server.on("/api/v1/manualunlock", HTTP_GET, handleUnlock);
   server.onNotFound(handleNotFound);
 
   server.begin();
