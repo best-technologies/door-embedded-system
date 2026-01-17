@@ -10,7 +10,7 @@
 
 // WiFi credentials
 const char* ssid = "max-router2.4G";
-const char* password = "maximus123";
+const char* password = "";
 
 // Web server on port 80
 WebServer server(80);
@@ -70,7 +70,7 @@ void setup() {
   // Setup web server routes
   server.on("/api/v1/unlock", HTTP_POST, handleUnlock);
   server.on("/api/v1/buzzer", HTTP_POST, handleBuzzer);
-    server.on("/api/v1/manualunlock", HTTP_GET, handleUnlock);
+  server.on("/api/v1/manualunlock", HTTP_GET, handleUnlock);
   server.onNotFound(handleNotFound);
 
   server.begin();
@@ -156,11 +156,11 @@ void soundVisitorBuzzer() {
 void checkButton() {
   static bool lastButtonState = HIGH;
   bool currentButtonState = digitalRead(BUTTON_PIN);
-  
+
   // Detect falling edge (button pressed)
   if (lastButtonState == HIGH && currentButtonState == LOW) {
     unsigned long currentTime = millis();
-    
+
     // Debounce check
     if (currentTime - lastButtonPress > debounceDelay) {
       lastButtonPress = currentTime;
@@ -168,6 +168,6 @@ void checkButton() {
       unlockDoor(5000, "Manual Button");
     }
   }
-  
+
   lastButtonState = currentButtonState;
 }
